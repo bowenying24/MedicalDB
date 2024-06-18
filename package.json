@@ -1,0 +1,34 @@
+{
+  "name": "cis-5500-fall-2023-final-project-team-32",
+  "version": "1.0.0",
+  "description": "This repository includes files associated with the CIS5500 Final Project, involving the design of a database for medical claims.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "build": "cd client && npm install && npm run build",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chrisksnider/CIS-5500-Fall-2023-Final-Project-Team-32.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/chrisksnider/CIS-5500-Fall-2023-Final-Project-Team-32/issues"
+  },
+  "homepage": "https://github.com/chrisksnider/CIS-5500-Fall-2023-Final-Project-Team-32#readme",
+  "dependencies": {
+    "@mui/icons-material": "^5.15.0",
+    "express": "^4.18.2",
+    "jwt-decode": "^4.0.0"
+  },
+  "engines": {
+    "node": "14.x"
+  },
+  "devDependencies": {
+    "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
+    "concurrently": "^8.2.2"
+  }
+}

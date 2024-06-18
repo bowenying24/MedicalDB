@@ -1,0 +1,7 @@
+The medical database is accessible using the following credentials:
+
+User: cis5500_admin
+Password: cis5500team32
+Endpoint: database-1.cz50nsrtl2jx.us-east-1.rds.amazonaws.com
+Port: 3306
+Database: medicalclaims_db

@@ -1,0 +1,25 @@
+.navLink {
+    margin: 0 10px;
+    color: inherit;
+    text-decoration: none;
+    font-family: Helvetica;
+    font-size: 1rem;
+    font-weight: normal;
+    display: flex;
+    align-items: center;
+    transition: color 0.3s ease;
+  }
+  
+  .navLink:hover {
+    color: #9370db; /* Replace with your desired hover color */
+  }
+  
+  .navLinkMain {
+    font-size: 2.5rem;
+    font-weight: bold;
+  }
+  
+  .navLinkMain:hover {
+    color: inherit; /* No color change on hover for the main link */
+  }
+  

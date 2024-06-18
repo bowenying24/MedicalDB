@@ -1,0 +1,270 @@
+/**** Medical Claims Database Queries ****/
+/**
+The medical database is accessible using the following credentials:
+User: cis5500_admin
+Password: cis5500team32
+Endpoint: database-1.cz50nsrtl2jx.us-east-1.rds.amazonaws.com
+Port: 3306
+Database: medicalclaims_db
+**/
+
+USE medicalclaims_db ;
+
+# Top Diagnosis Summary
+/** This query summarizes cost and utilization metrics by diagnosis code and diagnosis name, ordered by total cost (descending)
+Note: Although an encounter may have more than 1 diagnosis, only the primary diagnosis is considered here (DxNum = 1) for summarization
+**/
+SELECT dx.DxCode
+      ,dx.DxName
+      ,COUNT(DISTINCT enc.BeneID) AS TotalPatients
+      ,COUNT(DISTINCT enc.ClaimID) AS TotalEncounters
+      ,SUM(enc.AmountReimbursed) AS TotalCost
+      ,SUM(CASE WHEN enc.Type = 'Outpatient' THEN enc.AmountReimbursed END) AS OutpatientCost
+      ,SUM(CASE WHEN enc.Type = 'Outpatient' THEN enc.AmountReimbursed END)/SUM(enc.AmountReimbursed) AS ProportionOutpatient
+      ,SUM(CASE WHEN enc.Type = 'Inpatient' THEN enc.AmountReimbursed END) AS InpatientCost
+      ,SUM(CASE WHEN enc.Type = 'Inpatient' THEN enc.AmountReimbursed END)/SUM(enc.AmountReimbursed) AS ProportionInpatient
+  FROM Encounter enc
+  JOIN EncounterDiagnosis edx
+  ON enc.ClaimID = edx.ClaimID
+  JOIN DiagnosisReference dx
+  ON edx.DxCode = dx.DxCode
+  WHERE enc.ClaimStartDate >= DATE_ADD("2009-12-31", INTERVAL -30 DAY)
+  AND edx.DxNum = 1
+  GROUP BY dx.DxCode, dx.DxName
+  HAVING SUM(enc.AmountReimbursed) > 0
+  ORDER BY SUM(enc.AmountReimbursed) DESC
+  LIMIT 100
+;
+
+# Financial Impact of Fraud
+/**
+This query depicts the difference in average cost (amount reimbursed by insurance and deductible paid by the patient).
+Patients are classified as experiencing potential fraud if the provider with whom they had the most encounters was flagged for potential fraud (in a subquery).
+The average cost is stratified by age category to account for differences in health care spending across age groups.
+Note: If a provider is tied for most visits for a given patient, the provider is randomly selected.
+**/
+      SELECT AgeCategory
+          ,AVG(CASE WHEN PotentialFraud = 'Yes' THEN TotalReimbursedAmount END) AS FraudAvgReimbursedAmount
+          ,AVG(CASE WHEN PotentialFraud != 'Yes' THEN TotalReimbursedAmount END) AS NoFraudAvgReimbursedAmount
+          ,AVG(CASE WHEN PotentialFraud = 'Yes' THEN TotalDeductible END) AS FraudAvgDeductible
+          ,AVG(CASE WHEN PotentialFraud != 'Yes' THEN TotalDeductible END) AS NoFraudAvgDeductible
+      FROM (
+          SELECT BeneID, AgeCategory
+              ,MAX(CASE WHEN ProviderRank = 1 THEN PotentialFraud END) AS PotentialFraud
+              ,SUM(TotalReimbursedAmount) AS TotalReimbursedAmount
+              ,SUM(TotalDeductible) AS TotalDeductible
+          FROM  PatientProvider
+          GROUP BY BeneID, AgeCategory
+      ) summary
+      GROUP BY AgeCategory
+      ORDER BY AgeCategory
+;
+
+# 
+/**
+This query selects a cohort of patients along with attributes of interest who meet some eligibility criteria (e.g., for a study). Patients are selected if they are alive (DOD is NULL) and they have a diagnosis of hypertension.
+The query returns patient demographic info, the provider they had most recently seen, as well an indicator for important comorbidities.
+**/
+  WITH PatDx AS (
+      SELECT enc.BeneID, dx.DxCode, dx.DxName, MIN(enc.ClaimStartDate) AS DxDate
+      FROM Encounter enc
+      JOIN EncounterDiagnosis edx ON enc.ClaimID = edx.ClaimID
+      JOIN DiagnosisReference dx ON edx.DxCode = dx.DxCode
+      LEFT JOIN Comorbidity com ON enc.BeneID = com.BeneID
+      AND com.Comorbidity IN ('Alzheimers Disease', 'Chronic Kidney Disease', 'Heart Failure')
+      WHERE dx.DxCode = '41401' AND com.BeneID IS NULL
+      GROUP BY enc.BeneID, dx.DxCode, dx.DxName
+  )
+  SELECT pv.BeneID, pv.Age, pv.Gender, pv.Race, pv.LastEncounterDate, pv.ProviderID, 
+         pdx.DxCode, pdx.DxName, pdx.DxDate
+  FROM PatDx pdx
+  JOIN PatientView pv ON pdx.BeneID = pv.BeneID
+  WHERE pv.DOD IS NULL
+;
+
+# Provider Info
+/**
+This query returns a table of the top providers in terms of spending (amount reimbursed). Data elements include the ProviderID, the number of patients seen, number of claims generated, total amount reimbursed, 3 most common diagnoses, and 3 most common procedures.
+ **/
+  SELECT p.ProviderID, p.TotalPatients, p.TotalClaims, p.TotalAmountReimbursed
+      ,MAX(CASE WHEN dx3.DxNumber = 1 THEN DiagnosisDescription END) AS Dx_1
+      ,MAX(CASE WHEN dx3.DxNumber = 2 THEN DiagnosisDescription END) AS Dx_2
+      ,MAX(CASE WHEN dx3.DxNumber = 3 THEN DiagnosisDescription END) AS Dx_3
+      ,MAX(CASE WHEN px3.ProcNumber = 1 THEN ProcedureDescription END) AS Proc_1
+      ,MAX(CASE WHEN px3.ProcNumber = 2 THEN ProcedureDescription END) AS Proc_2
+      ,MAX(CASE WHEN px3.ProcNumber = 3 THEN ProcedureDescription END) AS Proc_3
+  FROM TopProviderInfo p
+  LEFT JOIN (
+      SELECT ProviderID, DiagnosisDescription, TotalClaims, ROW_NUMBER() OVER (PARTITION BY ProviderID ORDER BY TotalClaims DESC) AS DxNumber
+      FROM (
+      SELECT p.ProviderID, CONCAT(dx.DxName,' [',dx.DxCode,']') AS DiagnosisDescription, COUNT(DISTINCT enc.ClaimID) AS TotalClaims
+      FROM TopProviderInfo p
+      JOIN Encounter enc
+      ON p.ProviderID = enc.ProviderID
+      JOIN EncounterDiagnosis edx
+      ON enc.ClaimID = edx.ClaimID
+      JOIN DiagnosisReference dx
+      ON edx.DxCode = dx.DxCode
+      GROUP BY enc.ProviderID, CONCAT(dx.DxName,' [',dx.DxCode,']')
+      ) dx_all
+  ) dx3
+  ON p.ProviderID = dx3.ProviderID AND dx3.DxNumber <= 3
+  LEFT JOIN (
+      SELECT ProviderID, ProcedureDescription, TotalClaims, ROW_NUMBER() OVER (PARTITION BY ProviderID ORDER BY TotalClaims DESC) AS ProcNumber
+      FROM (
+      SELECT p.ProviderID, CONCAT(px.ProcedureName,' [',px.ProcedureCode,']') AS ProcedureDescription, COUNT(DISTINCT enc.ClaimID) AS TotalClaims
+      FROM TopProviderInfo p
+      JOIN Encounter enc
+      ON p.ProviderID = enc.ProviderID
+      JOIN EncounterProcedure epx
+      ON enc.ClaimID = epx.ClaimID
+      JOIN ProcedureReference px
+      ON epx.ProcedureCode = px.ProcedureCode
+      GROUP BY enc.ProviderID, CONCAT(px.ProcedureName,' [',px.ProcedureCode,']')
+      ) proc_all
+  ) px3
+  ON p.ProviderID = px3.ProviderID AND px3.ProcNumber <= 3
+  GROUP BY p.ProviderID, p.TotalPatients, p.TotalClaims, p.TotalAmountReimbursed
+  ORDER BY p.TotalAmountReimbursed DESC
+  ;
+
+# Encounter Search Results
+/**
+This query returns a list of encounters that fit a set of given search parameters
+i.e. ClaimsStartDate is between start_date_range and end_date_range, DxCode = dx_code, ProcedureCode = procedure_code
+ **/
+    SELECT DISTINCT E.*
+    FROM Encounter E
+    LEFT JOIN EncounterDiagnosis ED ON E.ClaimID = ED.ClaimID
+    LEFT JOIN EncounterProcedure EP ON E.ClaimID = EP.ClaimID
+    WHERE
+        (ED.DxCode = ? OR ? IS NULL OR ? = '')
+        AND (EP.ProcedureCode = ? OR ? IS NULL OR ? = '')
+        AND (
+            (E.ClaimStartDate BETWEEN ? AND ?)
+            OR (? IS NULL AND E.ClaimStartDate <= ?)
+            OR (? IS NULL AND E.ClaimStartDate >= ?)
+            OR (? IS NULL AND ? IS NULL)
+
+
+
+#Patient Search Results
+/**
+This query returns a list of patients that fit a set of given search parameters
+Can filter by gender, age, comorbidities, and diagnosis or procedure history
+ **/
+      SELECT DISTINCT P.*
+      FROM Patient P
+      LEFT JOIN Encounter E ON P.BeneID = E.BeneID
+      LEFT JOIN EncounterDiagnosis ED ON E.ClaimID = ED.ClaimID
+      LEFT JOIN EncounterProcedure EP ON E.ClaimID = EP.ClaimID
+      LEFT JOIN Comorbidity C ON P.BeneID = C.BeneID
+      WHERE
+          (P.Gender = ? OR ? IS NULL OR ? = '')
+          AND (C.Comorbidity = ? OR ? IS NULL OR ? = '')
+          AND (ED.DxCode = ? OR ? IS NULL OR ? = '')
+          AND (EP.ProcedureCode = ? OR ? IS NULL OR ? = '')
+          AND (
+              (YEAR(CURRENT_DATE) - YEAR(P.DOB) BETWEEN ? AND ?)
+              OR (? IS NULL AND YEAR(CURRENT_DATE) - YEAR(P.DOB) <= ?)
+              OR (? IS NULL AND YEAR(CURRENT_DATE) - YEAR(P.DOB) >= ?)
+              OR (? IS NULL AND ? IS NULL)
+          );
+
+
+# Top Procedures Summary
+/**
+This query summarizes cost and utilization metrics by procedure code and procedure name, ordered by total cost (descending).
+Note: If an encounter has more than 1 procedure, only the primary procedure is considered here for summarization.
+**/
+      SELECT pr.ProcedureCode
+      ,pr.ProcedureName
+      ,COUNT(DISTINCT en.BeneID) AS TotalPatients
+      ,COUNT(DISTINCT en.ClaimID) AS TotalEncounters
+      ,COUNT(DISTINCT CASE WHEN en.Type = 'Outpatient' THEN en.ClaimID END) AS OutpatientEncounters
+      ,COUNT(DISTINCT CASE WHEN en.Type = 'Inpatient' THEN en.ClaimID END) AS InpatientEncounters
+      ,SUM(en.AmountReimbursed) AS TotalCost
+      ,SUM(CASE WHEN en.Type = 'Outpatient' THEN en.AmountReimbursed END) AS OutpatientCost
+      ,SUM(CASE WHEN en.Type = 'Outpatient' THEN en.AmountReimbursed END)/SUM(en.AmountReimbursed) AS ProportionOutpatient
+      ,SUM(CASE WHEN en.Type = 'Inpatient' THEN en.AmountReimbursed END) AS InpatientCost
+      ,SUM(CASE WHEN en.Type = 'Inpatient' THEN en.AmountReimbursed END)/SUM(en.AmountReimbursed) AS ProportionInpatient
+  FROM EncounterProcedure ep
+  JOIN Encounter en
+  ON ep.ClaimID = en.ClaimID
+  JOIN ProcedureReference pr
+  ON ep.ProcedureCode = pr.ProcedureCode
+  WHERE en.ClaimStartDate >= DATE_ADD("2009-12-31", INTERVAL -365 DAY)
+  AND ep.ProcedureNum = 1
+  GROUP BY pr.ProcedureCode
+      ,pr.ProcedureName
+  HAVING SUM(en.AmountReimbursed) > 0
+  ORDER BY SUM(en.AmountReimbursed) DESC;
+LIMIT 100
+;
+
+# Claims and Patients Summary by Year-Month
+/**
+This query provides a monthly summary for the year 2009, focusing on the total number of claims and patients. 
+It uses the 'Encounter' table to extract the year and month from the 'ClaimStartDate' field. Each record is 
+grouped by year and month to calculate the distinct count of claims and patients within that period. This 
+summarization is particularly useful for analyzing trends and patterns in claims and patient visits over 
+the different months of 2009. The results are ordered chronologically to facilitate easy interpretation of 
+how the number of claims and patients varies over the course of the year.
+**/
+    SELECT
+        YEAR(en.ClaimStartDate) AS Year,
+        MONTH(en.ClaimStartDate) AS Month,
+        COUNT(DISTINCT en.ClaimID) AS TotalClaims,
+        COUNT(DISTINCT en.BeneID) AS TotalPatients
+    FROM
+        Encounter en
+    WHERE en.ClaimStartDate >= "2009-01-01"
+        AND en.ClaimStartDate < "2010-01-01"
+    GROUP BY
+        YEAR(en.ClaimStartDate),
+        MONTH(en.ClaimStartDate)
+    ORDER BY
+        YEAR(en.ClaimStartDate),
+        MONTH(en.ClaimStartDate)
+
+
+# Top Health Conditions
+/**
+This query looks at the beneficiaries and looks for the top 5 beneficiaries that have both inpatient and outpatient claims. 
+The occurences of each health condition are counted and the top 5 health conditions are retrieved.
+**/
+
+  SELECT com.Comorbidity, COUNT(DISTINCT p.BeneID) AS PatientCount, SUM(p.TotalClaims) AS ClaimCount, SUM(p.TotalReimbursedAmount) AS TotalSpending
+  FROM PatientView p
+  JOIN Comorbidity com ON p.BeneID = com.BeneID
+  GROUP BY Comorbidity
+  ORDER BY ClaimCount DESC
+  LIMIT 5;
+
+
+# Count Beneficaries With Certain Condition
+/**
+This query looks at the beneficiaries and looks at whether ornot they ahve a certain health condition. In this case, we are looking for all beneficiaries that have Alzheimers.
+**/
+
+    SELECT
+      CASE
+        WHEN Comorbidity =  'Alzheimers Disease' THEN 'Alzheimer''s Disease'
+        ELSE 'No Alzheimer''s'
+      END AS HealthCondition,
+      COUNT(DISTINCT enc.ClaimID) AS ClaimCount
+    FROM
+      Patient p
+      LEFT JOIN Comorbidity com ON p.BeneID = com.BeneID
+      LEFT JOIN Encounter enc ON p.BeneID = enc.BeneID
+      #LEFT JOIN InpatientData I ON B.BeneficiaryID = I.BeneficiaryID
+      #LEFT JOIN OutpatientData O ON B.BeneficiaryID = O.BeneficiaryID
+    GROUP BY
+      HealthCondition
+    ORDER BY
+      ClaimCount DESC
+
+
+
+
+
